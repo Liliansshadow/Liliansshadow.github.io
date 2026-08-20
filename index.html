@@ -96,6 +96,35 @@
       padding: 0;
     }
     .hero-close:hover { background: rgba(167, 139, 218, 0.45); transform: rotate(90deg); }
+
+    /* 重新展开卡片的小按钮（关闭后出现在左下角） */
+    .hero-restore {
+      position: absolute;
+      left: 18px;
+      bottom: 26px;
+      z-index: 1000;
+      width: 46px;
+      height: 46px;
+      border: none;
+      border-radius: 50%;
+      background: rgba(245, 240, 255, 0.7);
+      backdrop-filter: blur(12px) saturate(140%);
+      -webkit-backdrop-filter: blur(12px) saturate(140%);
+      border: 1px solid rgba(255, 255, 255, 0.8);
+      box-shadow: 0 6px 20px rgba(139, 116, 190, 0.28);
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      color: #8b6ec7;
+      display: none;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+    }
+    .hero-restore:hover {
+      transform: translateY(-3px) scale(1.05);
+      box-shadow: 0 10px 26px rgba(139, 116, 190, 0.4);
+      background: rgba(240, 234, 255, 0.9);
+    }
+    .hero-restore.show { display: block; animation: pop-in 0.25s ease; }
     .hero-card p {
       font-size: 12.5px;
       line-height: 1.7;
@@ -438,6 +467,9 @@
     <span class="badge">🌸 点击地图，收藏你的青春回忆</span>
     <span class="badge" id="syncBadge">💾 本地模式</span>
   </div>
+
+  <!-- 重新展开卡片的小按钮 -->
+  <button class="hero-restore" id="heroRestore" type="button" title="展开卡片" aria-label="展开信息卡片">🗺️</button>
 
   <!-- 提示气泡 -->
   <div class="hint-toast" id="hintToast">✨ 点击地图任意位置，留下你的校园时光</div>
@@ -1117,18 +1149,35 @@
       document.getElementById('hintToast').classList.add('hide');
     }, 6000);
 
-    /* ---------- 顶部信息卡片可关闭 ---------- */
+    /* ---------- 顶部信息卡片可关闭 / 重新展开 ---------- */
     (function () {
       var card = document.getElementById('heroCard');
       var btn = document.getElementById('heroClose');
+      var restore = document.getElementById('heroRestore');
       var HERO_KEY = 'campusMapHeroClosed';
-      // 之前关过就一直保持关闭
-      if (localStorage.getItem(HERO_KEY) === '1') {
+
+      function hideCard() {
         card.classList.add('hidden');
+        restore.classList.add('show');
       }
+      function showCard() {
+        card.classList.remove('hidden');
+        restore.classList.remove('show');
+      }
+
+      // 之前关过就一直保持关闭（同时显示左下角展开按钮）
+      if (localStorage.getItem(HERO_KEY) === '1') {
+        hideCard();
+      }
+
       btn.addEventListener('click', function () {
-        card.classList.add('hidden');
+        hideCard();
         try { localStorage.setItem(HERO_KEY, '1'); } catch (e) {}
+      });
+
+      restore.addEventListener('click', function () {
+        showCard();
+        try { localStorage.removeItem(HERO_KEY); } catch (e) {}
       });
     })();
 
