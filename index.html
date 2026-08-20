@@ -586,55 +586,65 @@
       });
     }
 
-    /* ---------- LeanCloud 云端共享 ----------
-       在 https://console.leancloud.cn 注册并创建「数据存储」应用后：
-       1. 把 AppID、AppKey 填到下方；
-       2. API 域名在「控制台 > 设置 > 域名绑定」查看，形如 https://xxxx.api.lncld.net，填到 server；
-       3. enabled 改为 true；
-       4. 在「控制台 > 数据存储 > 结构化数据」创建 Class：CampusMarker，
-          并在其「权限」里把 create / find / get / update / delete 都开放给「所有用户」；
-       5. 在「控制台 > 设置 > 安全中心」的「Web 安全域名」里添加你的网站域名
-         （如 https://zhangsan.github.io，本地 localhost 默认放行）。
+    /* ---------- Supabase 云端共享 ----------
+       在 https://supabase.com 注册并创建项目后：
+       1. 项目 URL 与 anon/publishable 密钥在项目里点「API Keys / Copy project URL and API keys」查看；
+       2. 把 URL 和 anonKey 填到下方，enabled 改为 true；
+       3. 在 SQL 编辑器执行以下建表语句（含匿名读写权限）：
+         create table if not exists public.campus_markers (
+           id uuid primary key default gen_random_uuid(),
+           lat double precision not null,
+           lng double precision not null,
+           crs text not null default 'gcj02',
+           photo text, description text,
+           created_at timestamptz not null default now()
+         );
+         alter table public.campus_markers enable row level security;
+         create policy "public_read" on public.campus_markers for select using (true);
+         create policy "public_insert" on public.campus_markers for insert with check (true);
+         create policy "public_update" on public.campus_markers for update using (true) with check (true);
+         create policy "public_delete" on public.campus_markers for delete using (true);
        完成后所有访客共享同一份标记数据。 */
-    var LEANCLOUD_CONFIG = {
-      enabled: false,                        // 填好下面三项后改为 true 启用云端共享
-      appId: '在此填入你的AppID',
-      appKey: '在此填入你的AppKey',
-      server: 'https://在此填入你的API域名'   // 例：https://xxxx.api.lncld.net
+    var SUPABASE_CONFIG = {
+      enabled: true,                                  // 已启用云端共享
+      url: 'https://endjjlgwgsgtyvevdifv.supabase.co',
+      anonKey: 'sb_publishable_DOUeDQzGr2qwfG20s-lYCg_vhvSk7Qa'
     };
-    var LC_CLASS = 'CampusMarker';           // 云端数据表名（Class）
+    var SB_TABLE = 'campus_markers';                   // 数据表名
 
-    function lcConfigured() {
-      var c = LEANCLOUD_CONFIG;
-      var serverOk = /^https:\/\//.test(c.server) || /^http:\/\/localhost/.test(c.server);
+    function sbConfigured() {
+      var c = SUPABASE_CONFIG;
+      var urlOk = /^https:\/\/[^/]+\/\/?$/.test(c.url + '/') && c.url.indexOf('supabase.co') !== -1;
       return !!c.enabled &&
-        c.appId && c.appId.indexOf('在此填入') === -1 &&
-        c.appKey && c.appKey.indexOf('在此填入') === -1 &&
-        serverOk;
+        urlOk &&
+        c.anonKey && c.anonKey.indexOf('在此填入') === -1 && c.anonKey.length > 20;
     }
 
-    function lcRequest(method, path, body) {
-      var c = LEANCLOUD_CONFIG;
-      return fetch(c.server + path, {
+    function sbRequest(method, path, body) {
+      var c = SUPABASE_CONFIG;
+      return fetch(c.url.replace(/\/+$/, '') + '/rest/v1' + path, {
         method: method,
         headers: {
-          'X-LC-Id': c.appId,
-          'X-LC-Key': c.appKey,
-          'Content-Type': 'application/json'
+          'apikey': c.anonKey,
+          'Authorization': 'Bearer ' + c.anonKey,
+          'Content-Type': 'application/json',
+          'Prefer': method === 'POST' ? 'return=representation' : 'return=minimal'
         },
         body: body ? JSON.stringify(body) : undefined
       }).then(function (r) {
+        if (r.status === 204) return {};
         return r.json().catch(function () { return {}; }).then(function (data) {
           if (!r.ok) {
-            throw new Error((data && data.error) || ('云端请求失败 HTTP ' + r.status));
+            throw new Error((data && (data.message || data.error)) || ('云端请求失败 HTTP ' + r.status));
           }
           return data;
         });
       });
     }
 
-    function lcCreate(marker) {
-      return lcRequest('POST', '/1.1/classes/' + LC_CLASS, {
+    // 新增记录，返回带 id 的记录
+    function sbCreate(marker) {
+      return sbRequest('POST', '/' + SB_TABLE, {
         lat: marker.lat,
         lng: marker.lng,
         crs: marker.crs,
@@ -643,8 +653,8 @@
       });
     }
 
-    function lcDelete(cloudId) {
-      return lcRequest('DELETE', '/1.1/classes/' + LC_CLASS + '/' + encodeURIComponent(cloudId));
+    function sbDelete(cloudId) {
+      return sbRequest('DELETE', '/' + SB_TABLE + '?id=eq.' + encodeURIComponent(cloudId));
     }
 
     /* ---------- 初始化地图 ---------- */
@@ -794,7 +804,7 @@
     }
 
     function loadMarkers() {
-      if (!lcConfigured()) {
+      if (!sbConfigured()) {
         // 未配置云端：使用本地数据
         setSyncStatus('💾 本地模式');
         localLoad().forEach(function (item) { addMarker(item, false); });
@@ -803,18 +813,18 @@
       }
       // 已配置云端：以云端为共享数据源
       setSyncStatus('☁️ 正在同步…');
-      lcRequest('GET', '/1.1/classes/' + LC_CLASS + '?limit=1000&order=createdAt')
-        .then(function (data) {
-          var list = (data.results || []).map(function (row) {
+      sbRequest('GET', '/' + SB_TABLE + '?select=*&order=created_at.asc&limit=1000')
+        .then(function (rows) {
+          var list = (rows || []).map(function (row) {
             return {
-              id: row.objectId,
-              cloudId: row.objectId,
+              id: row.id,
+              cloudId: row.id,
               lat: row.lat,
               lng: row.lng,
               crs: row.crs || currentCrs(),
               photo: row.photo || null,
               description: row.description || '',
-              createdAt: Date.parse(row.createdAt) || Date.now()
+              createdAt: Date.parse(row.created_at) || Date.now()
             };
           });
           list.forEach(function (item) { addMarker(item, false); });
@@ -888,11 +898,12 @@
 
       if (persist !== false) {
         localSave();
-        // 云端模式：把新标记同步到 LeanCloud
-        if (lcConfigured() && !m.cloudId) {
-          lcCreate(m).then(function (res) {
-            if (res && res.objectId && markers[m.id]) {
-              markers[m.id].cloudId = res.objectId;
+        // 云端模式：把新标记同步到 Supabase
+        if (sbConfigured() && !m.cloudId) {
+          sbCreate(m).then(function (res) {
+            var created = Array.isArray(res) ? res[0] : res;
+            if (created && created.id && markers[m.id]) {
+              markers[m.id].cloudId = created.id;
               localSave();
             }
           }).catch(function (err) {
@@ -909,8 +920,8 @@
       var m = markers[id];
       if (!m) return;
       // 云端模式：同步删除云端记录
-      if (lcConfigured() && m.cloudId) {
-        lcDelete(m.cloudId).catch(function (err) {
+      if (sbConfigured() && m.cloudId) {
+        sbDelete(m.cloudId).catch(function (err) {
           console.warn('云端删除失败', err);
           setSyncStatus('⚠️ 云端删除失败');
         });
