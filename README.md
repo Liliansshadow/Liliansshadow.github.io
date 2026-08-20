@@ -9,7 +9,7 @@
 - 📍 点击地图 → 弹窗表单（上传 JPG/PNG 照片 + 描述文字）
 - 🧷 保存后生成图钉标记，点击可查看照片与描述
 - 💾 默认数据存于浏览器 localStorage（刷新不丢失）
-- ☁️ 可选接入 LeanCloud 云端，实现**所有访客共享同一份数据**
+- ☁️ 已接入 **Supabase** 云端，实现**所有访客共享同一份数据**（云端不可用时自动回退本地）
 - 🎨 清新校园风，淡紫配色 + 毛玻璃弹窗
 
 ## 🚀 部署到 GitHub Pages（免安装 Git，网页直接上传）
@@ -34,22 +34,36 @@
 > ⚠️ 仓库名必须是 `<用户名>.github.io` 时，网站就托管在该域名根路径；
 > 如果用的是其他仓库名（如 `campus-map`），网址则是 `https://<用户名>.github.io/campus-map/`。
 
-## ☁️ 开启云端共享（所有访客共享数据，可选）
+## ☁️ 云端共享（所有访客共享同一份数据）
 
-默认情况下，每个人的标记只存在自己的浏览器里。想让**所有访客看到同一份标记**，需要接入 LeanCloud 免费后端：
+本项目已接入 **Supabase**（免费 BaaS）作为云端数据源：访客添加/删除标记时，数据会同步到云端，所有访客看到同一份数据。云端连不上时自动回退到本地模式，网站照常可用。
 
-1. **注册 LeanCloud**：打开 https://console.leancloud.cn 注册（国内服务，访问快）。
-2. **创建应用**：点「创建应用」，选「数据存储」服务。
-3. **获取密钥**：进入应用 → **设置 → 应用凭证**，复制 **AppID** 和 **AppKey**。
-4. **获取 API 域名**：**设置 → 域名绑定**，复制你的 API 域名（形如 `https://xxxx.api.lncld.net`）。
-5. **创建数据表**：**数据存储 → 结构化数据 → 创建 Class**，名称填 `CampusMarker`。
-6. **开放权限**：进入 `CampusMarker` 的「**权限**」页，把 `create / find / get / update / delete` 都设置为**所有用户**。
-7. **添加 Web 安全域名**：**设置 → 安全中心 → Web 安全域名**，添加你的网站域名（如 `https://zhangsan.github.io`；本地 `localhost` 默认放行）。
-8. **填入 `index.html`**：打开 `index.html`，找到 `LEANCLOUD_CONFIG`，填入 AppID / AppKey / API 域名，并把 `enabled` 改为 `true`，保存后重新上传到 GitHub。
+**配置说明（已内置在 `index.html` 的 `SUPABASE_CONFIG` 中）：**
 
-配置好后，页面左上角会显示 **「☁️ 云端共享 · N 条」**；未配置时显示 **「💾 本地模式」**（功能照常可用）。
+1. **注册 Supabase**：打开 https://supabase.com ，用 GitHub 或邮箱注册（免费，无需手机号/付费）。
+2. **创建项目**：New project → 填项目名、选区域（国内建议 **新加坡 Singapore**）、生成数据库密码 → 创建。
+3. **拿密钥**：项目首页点 **API Keys / Copy project URL and API keys**，复制 **Project URL** 和 **Publishable key**。
+4. **建数据表**：进入 **SQL Editor**，执行以下 SQL（含建表 + 匿名读写权限）：
+   ```sql
+   create table if not exists public.campus_markers (
+     id uuid primary key default gen_random_uuid(),
+     lat double precision not null,
+     lng double precision not null,
+     crs text not null default 'gcj02',
+     photo text, description text,
+     created_at timestamptz not null default now()
+   );
+   alter table public.campus_markers enable row level security;
+   create policy "public_read" on public.campus_markers for select using (true);
+   create policy "public_insert" on public.campus_markers for insert with check (true);
+   create policy "public_update" on public.campus_markers for update using (true) with check (true);
+   create policy "public_delete" on public.campus_markers for delete using (true);
+   ```
+5. **填入 `index.html`**：打开 `index.html`，找到 `SUPABASE_CONFIG`，把 `url` 和 `anonKey` 换成你的项目值，`enabled` 保持 `true`，保存后重新上传到 GitHub。
 
-> 🔒 安全提示：`AppKey` 是公开给浏览器的（LeanCloud 官方做法），请勿把 `MasterKey` 填进去。如需更细的权限（比如只允许部分人删除），可以在 Class 权限里进一步限制。
+配置好后，页面左上角会显示 **「☁️ 云端共享 · N 条」**；云端不可用时显示 **「⚠️ 云端不可用 · 本地模式」**，未配置时显示 **「💾 本地模式」**（功能照常可用）。
+
+> 🔒 安全提示：`Publishable key`（匿名公钥）是公开给浏览器的（Supabase 官方做法）。数据表已开启 RLS，目前匿名可读写；如需更细的权限（比如只允许部分人删除），可以在 Supabase 的 RLS 策略里进一步限制。
 
 ## 🔁 以后更新网站
 
@@ -66,7 +80,7 @@
 - 底图瓦片：高德（默认）/ OSM 镜像，支持切换
 - 内置 **WGS-84 ↔ GCJ-02** 坐标转换，保证两种底图下标记位置一致
 - 图片自动压缩（640px）后再存储，兼顾清晰度与存储容量
-- 可选 **LeanCloud REST API** 云端共享：云端不可用或未配置时自动回退本地模式
+- 已接入 **Supabase REST API** 云端共享：云端不可用或未配置时自动回退本地模式
 
 ## 📁 文件
 
