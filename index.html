@@ -78,6 +78,24 @@
       background-clip: text;
       -webkit-text-fill-color: transparent;
     }
+    .hero-card.hidden { display: none; }
+    .hero-close {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 26px;
+      height: 26px;
+      border: none;
+      border-radius: 50%;
+      background: rgba(167, 139, 218, 0.25);
+      color: #7a5fb0;
+      font-size: 14px;
+      line-height: 26px;
+      cursor: pointer;
+      transition: background 0.2s ease, transform 0.2s ease;
+      padding: 0;
+    }
+    .hero-close:hover { background: rgba(167, 139, 218, 0.45); transform: rotate(90deg); }
     .hero-card p {
       font-size: 12.5px;
       line-height: 1.7;
@@ -412,8 +430,9 @@
 
   <div id="map"></div>
 
-  <!-- 顶部信息卡片 -->
-  <div class="hero-card">
+  <!-- 顶部信息卡片（可关闭） -->
+  <div class="hero-card" id="heroCard">
+    <button class="hero-close" id="heroClose" type="button" title="关闭">✕</button>
     <h1>📌 校园时光地图</h1>
     <p>邯郸市第一中学中华南校区<br/>📍 中华南大街 666 号</p>
     <span class="badge">🌸 点击地图，收藏你的青春回忆</span>
@@ -1097,6 +1116,21 @@
     setTimeout(function () {
       document.getElementById('hintToast').classList.add('hide');
     }, 6000);
+
+    /* ---------- 顶部信息卡片可关闭 ---------- */
+    (function () {
+      var card = document.getElementById('heroCard');
+      var btn = document.getElementById('heroClose');
+      var HERO_KEY = 'campusMapHeroClosed';
+      // 之前关过就一直保持关闭
+      if (localStorage.getItem(HERO_KEY) === '1') {
+        card.classList.add('hidden');
+      }
+      btn.addEventListener('click', function () {
+        card.classList.add('hidden');
+        try { localStorage.setItem(HERO_KEY, '1'); } catch (e) {}
+      });
+    })();
 
     /* ---------- 启动 ---------- */
     loadMarkers();
