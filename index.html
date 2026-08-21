@@ -193,6 +193,67 @@
       box-shadow: 0 4px 12px rgba(139, 110, 199, 0.4);
     }
 
+    /* ============ 手绘地图叠加 ============ */
+    .overlay-btn-wrap {
+      display: flex;
+      padding: 4px;
+      border-radius: 14px;
+      background: rgba(245, 240, 255, 0.7);
+      backdrop-filter: blur(12px) saturate(140%);
+      -webkit-backdrop-filter: blur(12px) saturate(140%);
+      border: 1px solid rgba(255, 255, 255, 0.8);
+      box-shadow: 0 6px 20px rgba(139, 116, 190, 0.25);
+    }
+    .overlay-btn {
+      border: none;
+      padding: 5px 9px;
+      border-radius: 10px;
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+      background: transparent;
+      transition: background 0.2s ease;
+    }
+    .overlay-btn:hover { background: rgba(167, 139, 218, 0.18); }
+
+    .overlay-panel {
+      position: absolute;
+      top: 126px;
+      right: 18px;
+      z-index: 1001;
+      width: 250px;
+      padding: 16px 16px 14px;
+      border-radius: 18px;
+      background: rgba(250, 247, 255, 0.88);
+      backdrop-filter: blur(16px) saturate(150%);
+      -webkit-backdrop-filter: blur(16px) saturate(150%);
+      border: 1px solid rgba(255, 255, 255, 0.85);
+      box-shadow: 0 16px 44px rgba(100, 72, 160, 0.32);
+      color: #4b3a6b;
+      display: none;
+    }
+    .overlay-panel.show { display: block; animation: pop-in 0.25s ease; }
+    .overlay-panel-title { font-size: 14px; font-weight: 800; margin-bottom: 12px; }
+    .overlay-btn-main {
+      width: 100%;
+      padding: 10px 0;
+      border: none;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      background: linear-gradient(120deg, #9d7fd4, #b79ce0);
+      color: #fff;
+      box-shadow: 0 6px 16px rgba(139, 110, 199, 0.35);
+      font-family: inherit;
+      margin-bottom: 10px;
+    }
+    .overlay-btn-main.danger { background: linear-gradient(120deg, #d48a8a, #c96b6b); box-shadow: 0 6px 16px rgba(201,107,107,.3); }
+    .overlay-row { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; font-size: 12.5px; }
+    .overlay-row input[type="range"] { flex: 1; accent-color: #8b6ec7; }
+    .overlay-row button { flex: 1; margin-bottom: 0; }
+    .overlay-hint { font-size: 11px; color: #a394bd; line-height: 1.7; margin-top: 4px; }
+
     /* ============ 表单弹窗（毛玻璃） ============ */
     .modal-overlay {
       position: fixed;
@@ -473,6 +534,24 @@
 
   <!-- 提示气泡 -->
   <div class="hint-toast" id="hintToast">✨ 点击地图任意位置，留下你的校园时光</div>
+
+  <!-- 手绘地图叠加面板 -->
+  <div class="overlay-panel" id="overlayPanel">
+    <div class="overlay-panel-title">🎨 手绘校园地图</div>
+    <input type="file" id="overlayFileInput" accept="image/png,image/jpeg" hidden />
+    <button class="overlay-btn-main" id="overlayUpload" type="button"><span id="overlayUploadText">📤 上传手绘图</span></button>
+    <div id="overlayControls" style="display:none;">
+      <div class="overlay-row">
+        <span>透明度</span>
+        <input type="range" id="overlayOpacity" min="30" max="100" value="85" />
+      </div>
+      <div class="overlay-row">
+        <button class="overlay-btn-main" id="overlayToggle" type="button">🙈 隐藏</button>
+        <button class="overlay-btn-main danger" id="overlayDelete" type="button">🗑 删除</button>
+      </div>
+      <div class="overlay-hint">💡 拖拽地图上两个圆点，可调整手绘图的位置和大小，让它和校园对得齐。</div>
+    </div>
+  </div>
 
   <!-- 右下角标记统计 -->
   <div class="counter-chip">📍 已收藏 <strong id="markerCount">0</strong> 段时光</div>
@@ -786,6 +865,11 @@
         var p = convertLatLng(m.lat, m.lng, m.crs, currentCrs());
         m.leafletMarker.setLatLng(p);
       });
+
+      // 重绘手绘地图叠加（保持同一物理位置）
+      if (overlayImage && overlayWGS) {
+        drawOverlay(overlayImage, overlayWGS, overlayOpacity, overlayVisible);
+      }
 
       // 更新按钮状态
       document.querySelectorAll('.bs-btn').forEach(function (b) {
@@ -1181,8 +1265,236 @@
       });
     })();
 
+    /* ---------- 手绘地图叠加（上传自定义卡通地图） ---------- */
+    var overlayImage = null;              // 图片 dataURL
+    var overlayLayer = null;              // L.imageOverlay
+    var overlaySW = null, overlayNE = null; // 两个角点拖拽标记
+    var overlayWGS = null;                // 叠加范围（WGS-84 基准，跨底图保持一致）
+    var overlayOpacity = 0.85;
+    var overlayVisible = true;
+    var OVERLAY_KEY = 'campusMapOverlay';
+    var IDB_NAME = 'campusMapDB';
+    var IDB_STORE = 'files';
+
+    // IndexedDB：存放手绘图（localStorage 放不下大图）
+    function idbOpen() {
+      return new Promise(function (resolve, reject) {
+        var req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = function () {
+          if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+            req.result.createObjectStore(IDB_STORE);
+          }
+        };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror = function () { reject(req.error); };
+      });
+    }
+    function idbPut(key, value) {
+      return idbOpen().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(IDB_STORE, 'readwrite');
+          tx.objectStore(IDB_STORE).put(value, key);
+          tx.oncomplete = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+      });
+    }
+    function idbGet(key) {
+      return idbOpen().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(IDB_STORE, 'readonly');
+          var req = tx.objectStore(IDB_STORE).get(key);
+          req.onsuccess = function () { resolve(req.result); };
+          req.onerror = function () { reject(req.error); };
+        });
+      });
+    }
+    function idbDel(key) {
+      return idbOpen().then(function (db) {
+        return new Promise(function (resolve, reject) {
+          var tx = db.transaction(IDB_STORE, 'readwrite');
+          tx.objectStore(IDB_STORE).delete(key);
+          tx.oncomplete = function () { resolve(); };
+          tx.onerror = function () { reject(tx.error); };
+        });
+      });
+    }
+
+    // 角点拖拽图标
+    function cornerIcon() {
+      return L.divIcon({
+        className: '',
+        html: '<div style="width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid #9d7fd4;box-shadow:0 0 0 3px rgba(157,127,212,.28);cursor:move;"></div>',
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
+      });
+    }
+
+    function removeOverlayLayers() {
+      if (overlayLayer) { map.removeLayer(overlayLayer); overlayLayer = null; }
+      if (overlaySW) { map.removeLayer(overlaySW); overlaySW = null; }
+      if (overlayNE) { map.removeLayer(overlayNE); overlayNE = null; }
+    }
+
+    // 把 WGS-84 角点转到当前底图坐标系
+    function wgsToCrsLL(lat, lng) {
+      var p = convertLatLng(lat, lng, 'wgs84', currentCrs());
+      return L.latLng(p[0], p[1]);
+    }
+
+    function drawOverlay(url, wgsBounds, opacity, visible) {
+      removeOverlayLayers();
+      if (!url || !wgsBounds) return;
+      var bounds = L.latLngBounds(wgsToCrsLL(wgsBounds.sw[0], wgsBounds.sw[1]),
+                                  wgsToCrsLL(wgsBounds.ne[0], wgsBounds.ne[1]));
+      overlayLayer = L.imageOverlay(url, bounds, { opacity: opacity, interactive: false }).addTo(map);
+      if (visible === false) map.removeLayer(overlayLayer);
+      overlaySW = L.marker(bounds.getSouthWest(), { icon: cornerIcon(), draggable: true }).addTo(map);
+      overlayNE = L.marker(bounds.getNorthEast(), { icon: cornerIcon(), draggable: true }).addTo(map);
+
+      function syncFromMarkers() {
+        var b = L.latLngBounds(overlaySW.getLatLng(), overlayNE.getLatLng());
+        overlayLayer.setBounds(b);
+        var s = overlaySW.getLatLng(), n = overlayNE.getLatLng();
+        var ws = convertLatLng(s.lat, s.lng, currentCrs(), 'wgs84');
+        var wn = convertLatLng(n.lat, n.lng, currentCrs(), 'wgs84');
+        overlayWGS = { sw: [ws[0], ws[1]], ne: [wn[0], wn[1]] };
+        saveOverlayMeta();
+      }
+      overlaySW.on('drag', syncFromMarkers);
+      overlayNE.on('drag', syncFromMarkers);
+    }
+
+    function saveOverlayMeta() {
+      if (!overlayImage || !overlayWGS) return;
+      try {
+        localStorage.setItem(OVERLAY_KEY, JSON.stringify({
+          sw: overlayWGS.sw, ne: overlayWGS.ne,
+          opacity: overlayOpacity, visible: overlayVisible
+        }));
+      } catch (e) {}
+    }
+
+    function removeOverlay() {
+      overlayImage = null;
+      overlayWGS = null;
+      overlayOpacity = 0.85;
+      overlayVisible = true;
+      removeOverlayLayers();
+      try { localStorage.removeItem(OVERLAY_KEY); } catch (e) {}
+      idbDel('overlayImage');
+      updateOverlayPanel();
+    }
+
+    function loadOverlay() {
+      var meta = null;
+      try { meta = JSON.parse(localStorage.getItem(OVERLAY_KEY) || 'null'); } catch (e) {}
+      if (!meta || !meta.sw || !meta.ne) return;
+      overlayWGS = { sw: meta.sw, ne: meta.ne };
+      overlayOpacity = (meta.opacity != null) ? meta.opacity : 0.85;
+      overlayVisible = (meta.visible !== false);
+      idbGet('overlayImage').then(function (dataURL) {
+        if (!dataURL) return;
+        overlayImage = dataURL;
+        drawOverlay(dataURL, overlayWGS, overlayOpacity, overlayVisible);
+        updateOverlayPanel();
+      }).catch(function () {});
+    }
+
+    function updateOverlayPanel() {
+      var has = !!overlayImage;
+      document.getElementById('overlayControls').style.display = has ? 'block' : 'none';
+      document.getElementById('overlayUploadText').textContent = has ? '🔄 换一张' : '📤 上传手绘图';
+      var op = document.getElementById('overlayOpacity');
+      var v = Math.round(overlayOpacity * 100);
+      if (op.value != v) op.value = v;
+      document.getElementById('overlayToggle').textContent = overlayVisible ? '🙈 隐藏' : '👁 显示';
+    }
+
+    // 压缩手绘图（上限 2400px，手绘 PNG 保持清晰）
+    function compressOverlayImage(file) {
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function (e) {
+          var img = new Image();
+          img.onload = function () {
+            var w = img.width, h = img.height;
+            var maxSize = 2400;
+            if (Math.max(w, h) > maxSize) {
+              var r = maxSize / Math.max(w, h);
+              w = Math.round(w * r); h = Math.round(h * r);
+            }
+            var canvas = document.createElement('canvas');
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+            var isPng = file.type === 'image/png';
+            resolve(canvas.toDataURL(isPng ? 'image/png' : 'image/jpeg', 0.9));
+          };
+          img.onerror = reject;
+          img.src = e.target.result;
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // 右上角手绘控制按钮
+    var overlayCtrl = L.control({ position: 'topright' });
+    overlayCtrl.onAdd = function () {
+      var div = L.DomUtil.create('div', 'overlay-btn-wrap leaflet-bar');
+      div.innerHTML = '<button class="overlay-btn" id="overlayBtn" type="button" title="手绘地图">🎨</button>';
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+      return div;
+    };
+    overlayCtrl.addTo(map);
+
+    document.getElementById('overlayBtn').addEventListener('click', function () {
+      document.getElementById('overlayPanel').classList.toggle('show');
+    });
+    document.getElementById('overlayUpload').addEventListener('click', function () {
+      document.getElementById('overlayFileInput').click();
+    });
+    document.getElementById('overlayFileInput').addEventListener('change', function () {
+      var file = this.files && this.files[0];
+      if (!file) return;
+      if (!/^image\/(png|jpe?g)$/i.test(file.type)) { alert('请上传 PNG / JPG 图片'); return; }
+      compressOverlayImage(file).then(function (dataURL) {
+        overlayImage = dataURL;
+        var c = displayCenter();
+        // 默认覆盖学校区域约 480 米
+        var dLat = 0.0024, dLng = 0.003;
+        var sw = convertLatLng(c[0] - dLat, c[1] - dLng, currentCrs(), 'wgs84');
+        var ne = convertLatLng(c[0] + dLat, c[1] + dLng, currentCrs(), 'wgs84');
+        overlayWGS = { sw: [sw[0], sw[1]], ne: [ne[0], ne[1]] };
+        overlayOpacity = 0.85;
+        overlayVisible = true;
+        drawOverlay(dataURL, overlayWGS, overlayOpacity, overlayVisible);
+        idbPut('overlayImage', dataURL);
+        saveOverlayMeta();
+        updateOverlayPanel();
+        document.getElementById('overlayPanel').classList.add('show');
+      }).catch(function () { alert('图片读取失败，请换一张'); });
+    });
+    document.getElementById('overlayOpacity').addEventListener('input', function () {
+      overlayOpacity = this.value / 100;
+      if (overlayLayer) overlayLayer.setOpacity(overlayOpacity);
+      saveOverlayMeta();
+    });
+    document.getElementById('overlayToggle').addEventListener('click', function () {
+      if (!overlayLayer) return;
+      if (overlayVisible) { map.removeLayer(overlayLayer); overlayVisible = false; }
+      else { map.addLayer(overlayLayer); overlayVisible = true; }
+      saveOverlayMeta();
+      updateOverlayPanel();
+    });
+    document.getElementById('overlayDelete').addEventListener('click', function () {
+      if (confirm('确定删除手绘地图叠加吗？')) removeOverlay();
+    });
+
     /* ---------- 启动 ---------- */
     loadMarkers();
+    loadOverlay();
     }
   </script>
 </body>
