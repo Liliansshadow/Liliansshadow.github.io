@@ -674,8 +674,10 @@
       </div>
 
       <label class="nickname-label" for="nicknameInput">你的昵称 *</label>
-      <input class="nickname-input" id="nicknameInput" maxlength="20" placeholder="输入昵称（删除标记时需要用到）" autocomplete="off" />
-      <div class="form-hint">提交后进入待审核，通过后所有访客可见</div>
+      <input class="nickname-input" id="nicknameInput" maxlength="20" placeholder="输入昵称（所有人可见）" autocomplete="off" />
+      <label class="nickname-label" for="passwordInput">四位数密码 *</label>
+      <input class="nickname-input" id="passwordInput" type="password" maxlength="4" inputmode="numeric" pattern="[0-9]{4}" placeholder="设置删除密码（4位数字）" autocomplete="new-password" />
+      <div class="form-hint">昵称公开显示；密码隐藏保存，删除标记时需输入密码；提交后进入待审核</div>
 
       <label class="desc-label" for="descInput">写下此刻的心情</label>
       <textarea id="descInput" class="desc-input" maxlength="200" placeholder="这里有什么故事？教室、操场、食堂…想写什么都可以"></textarea>
@@ -902,6 +904,7 @@
         image: marker.photo || '',
         description: marker.description || '',
         nickname: marker.nickname || '',
+        password: marker.password || '1234',
         status: marker.status || 'pending'
       });
     }
@@ -1055,7 +1058,7 @@
           return {
             id: m.id, lat: m.lat, lng: m.lng,
             photo: m.photo, description: m.description, nickname: m.nickname,
-            status: m.status, createdAt: m.createdAt, cloudId: m.cloudId
+            password: m.password, status: m.status, createdAt: m.createdAt, cloudId: m.cloudId
           };
         });
         localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
@@ -1079,6 +1082,7 @@
         photo: row.image || null,
         description: row.description || '',
         nickname: row.nickname || '',
+        password: row.password || '1234',
         status: row.status || 'pending',
         createdAt: Date.parse(row.created_at) || Date.now()
       };
@@ -1226,17 +1230,17 @@
       document.getElementById('markerCount').textContent = n;
     }
 
-    // 删除按钮事件委托（需校验发布者昵称）
+    // 删除按钮事件委托（需校验发布者设置的密码）
     document.addEventListener('click', function (e) {
       var del = e.target.closest && e.target.closest('.delete-marker');
       if (!del) return;
       var id = del.getAttribute('data-id');
       var m = markers[id];
       if (!m) return;
-      var nick = prompt('请输入发布者昵称以确认删除：');
-      if (nick === null) return;
-      if (nick.trim() !== (m.nickname || '')) {
-        alert('昵称不匹配，无法删除这条标记。');
+      var pwd = prompt('请输入发布者设置的删除密码（4位数字）：');
+      if (pwd === null) return;
+      if (pwd.trim() !== String(m.password || '1234')) {
+        alert('密码错误，无法删除这条标记。');
         return;
       }
       if (confirm('确定要删除这条校园时光吗？')) removeMarker(id);
@@ -1268,6 +1272,7 @@
       document.getElementById('photoPreview').src = '';
       document.getElementById('uploadZone').classList.remove('has-photo');
       document.getElementById('nicknameInput').value = '';
+      document.getElementById('passwordInput').value = '';
       document.getElementById('descInput').value = '';
       document.getElementById('charCount').textContent = '0';
       setSaving(false);
@@ -1351,10 +1356,16 @@
     document.getElementById('btnSave').addEventListener('click', function () {
       if (!pendingLatLng) return;
       var nick = document.getElementById('nicknameInput').value.trim();
+      var pwd = document.getElementById('passwordInput').value.trim();
       var desc = document.getElementById('descInput').value.trim();
       if (!nick) {
         alert('请先填写你的昵称～');
         document.getElementById('nicknameInput').focus();
+        return;
+      }
+      if (!/^\d{4}$/.test(pwd)) {
+        alert('请设置一个 4 位数字密码（用于以后删除标记）～');
+        document.getElementById('passwordInput').focus();
         return;
       }
       if (!currentPhoto && !desc) {
@@ -1373,6 +1384,7 @@
         photo: currentPhoto,
         description: desc,
         nickname: nick,
+        password: pwd,
         status: 'pending',
         createdAt: Date.now()
       };
