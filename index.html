@@ -635,6 +635,7 @@
   <div class="overlay-panel" id="overlayPanel">
     <div class="overlay-panel-title">🎨 手绘校园地图</div>
     <input type="file" id="overlayFileInput" accept="image/png,image/jpeg" hidden />
+    <input class="nickname-input" id="overlayPasswordInput" type="password" maxlength="4" inputmode="numeric" pattern="[0-9]{4}" placeholder="管理密码（4位数字）" autocomplete="new-password" style="margin-bottom:8px;" title="首次上传时设置；之后更换/删除需输入该密码" />
     <button class="overlay-btn-main" id="overlayUpload" type="button"><span id="overlayUploadText">📤 上传手绘图</span></button>
     <div id="overlayControls" style="display:none;">
       <div class="overlay-row">
@@ -650,7 +651,8 @@
         <button class="overlay-btn-main" id="overlayToggle" type="button">🙈 隐藏</button>
         <button class="overlay-btn-main danger" id="overlayDelete" type="button">🗑 删除</button>
       </div>
-      <div class="overlay-hint">💡 拖拽地图上两个圆点，可调整手绘图的位置和大小，让它和校园对得齐。</div>
+      <div class="overlay-hint">� 更换或删除手绘地图需输入管理密码（首次上传时设置，所有人共用同一密码）。</div>
+      <div class="overlay-hint">�💡 拖拽地图上两个圆点，可调整手绘图的位置和大小，让它和校园对得齐。</div>
       <div class="overlay-status" id="overlayStatus"></div>
     </div>
   </div>
@@ -1553,6 +1555,7 @@
     var overlayVisible = true;
     var overlayRotation = 0;              // 旋转角度（度，顺时针为正）
     var OVERLAY_KEY = 'campusMapOverlay';
+    var overlayPassword = '1234';             // 手绘地图管理密码（更换/删除时校验）
     var IDB_NAME = 'campusMapDB';
     var IDB_STORE = 'files';
     var SB_OVERLAY_TABLE = 'campus_overlay';   // 云端手绘图数据表（单行 id='shared'）
@@ -1792,7 +1795,8 @@
         localStorage.setItem(OVERLAY_KEY, JSON.stringify({
           sw: overlayWGS.sw, ne: overlayWGS.ne,
           opacity: overlayOpacity, visible: overlayVisible,
-          rotation: overlayRotation
+          rotation: overlayRotation,
+          password: overlayPassword
         }));
       } catch (e) {}
       // 拖拽过程中只存本地；松手后再推云端
@@ -1806,6 +1810,7 @@
       overlayOpacity = 0.85;
       overlayVisible = true;
       overlayRotation = 0;
+      overlayPassword = '1234';
       removeOverlayLayers();
       try { localStorage.removeItem(OVERLAY_KEY); } catch (e) {}
       idbDel('overlayImage');
@@ -1824,6 +1829,7 @@
         overlayOpacity = (meta.opacity != null) ? meta.opacity : 0.85;
         overlayVisible = (meta.visible !== false);
         overlayRotation = (meta.rotation != null) ? meta.rotation : 0;
+        overlayPassword = (meta.password != null && meta.password !== '') ? String(meta.password) : '1234';
         idbGet('overlayImage').then(function (dataURL) {
           if (!dataURL) { // 本地有元数据但图片丢了 → 直接拉云端
             sbLoadOverlay();
@@ -1918,7 +1924,8 @@
         ne_lat: overlayWGS.ne[0], ne_lng: overlayWGS.ne[1],
         opacity: overlayOpacity,
         visible: overlayVisible,
-        rotation: overlayRotation
+        rotation: overlayRotation,
+        password: overlayPassword
       };
       var send = function (img) {
         payload.image = img;
@@ -1991,6 +1998,7 @@
           overlayOpacity = (r.opacity != null) ? r.opacity : 0.85;
           overlayVisible = (r.visible !== false);
           overlayRotation = (r.rotation != null) ? r.rotation : 0;
+          overlayPassword = (r.password != null && r.password !== '') ? String(r.password) : '1234';
           idbPut('overlayImage', r.image);
           try {
             localStorage.setItem(OVERLAY_KEY, JSON.stringify({
@@ -2052,12 +2060,25 @@
       panel.classList.remove('show');
     });
     document.getElementById('overlayUpload').addEventListener('click', function () {
+      // 已有手绘图 → 更换需验证管理密码
+      if (overlayImage) {
+        var pwd = prompt('请输入手绘地图管理密码（4位数字）：');
+        if (pwd === null) return;
+        if (pwd.trim() !== String(overlayPassword || '1234')) { alert('密码错误，无法更换手绘地图。'); return; }
+      }
       document.getElementById('overlayFileInput').click();
     });
     document.getElementById('overlayFileInput').addEventListener('change', function () {
       var file = this.files && this.files[0];
       if (!file) return;
       if (!/^image\/(png|jpe?g)$/i.test(file.type)) { alert('请上传 PNG / JPG 图片'); return; }
+      // 首次上传：设置管理密码；更换时保留原密码（更换前已校验）
+      if (!overlayImage) {
+        var pwdInput = document.getElementById('overlayPasswordInput');
+        var newPwd = pwdInput ? pwdInput.value.trim() : '';
+        if (!/^\d{4}$/.test(newPwd)) { alert('请先设置 4 位数字管理密码（用于更换/删除手绘地图）'); if (pwdInput) pwdInput.focus(); this.value = ''; return; }
+        overlayPassword = newPwd;
+      }
       compressOverlayImage(file).then(function (dataURL) {
         overlayImage = dataURL;
         var c = displayCenter();
@@ -2101,6 +2122,9 @@
       updateOverlayPanel();
     });
     document.getElementById('overlayDelete').addEventListener('click', function () {
+      var pwd = prompt('请输入手绘地图管理密码（4位数字）：');
+      if (pwd === null) return;
+      if (pwd.trim() !== String(overlayPassword || '1234')) { alert('密码错误，无法删除手绘地图。'); return; }
       if (confirm('确定删除手绘地图叠加吗？')) removeOverlay();
     });
 
