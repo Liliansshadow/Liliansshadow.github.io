@@ -255,6 +255,23 @@
     .overlay-hint { font-size: 11px; color: #a394bd; line-height: 1.7; margin-top: 4px; }
     .overlay-status { display: flex; align-items: center; justify-content: center; gap: 5px; margin-top: 10px; padding: 7px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; background: rgba(167,139,218,.12); color: #6f5b94; }
     .overlay-status.cloud { background: rgba(90,170,220,.14); color: #2f7fae; }
+    /* 手绘图叠加层元素 */
+    .campus-overlay-img { z-index: 400; }
+    .campus-overlay-corner {
+      z-index: 500; width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; border: 3px solid #9d7fd4;
+      box-shadow: 0 0 0 3px rgba(157,127,212,.28); cursor: move;
+    }
+    .campus-overlay-rotate {
+      z-index: 500; width: 20px; height: 20px; border-radius: 50%;
+      background: #fff; border: 3px solid #e08fbf;
+      box-shadow: 0 0 0 3px rgba(224,143,191,.3); cursor: grab;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; color: #c96b6b; line-height: 1;
+    }
+    .campus-overlay-rotate::after { content: '↻'; }
+    .overlay-row button#overlayResetRot { flex: 0 0 auto; width: 30px; height: 30px; border: none; border-radius: 8px; background: rgba(167,139,218,.18); color: #6f5b94; font-size: 15px; cursor: pointer; }
+    .overlay-row button#overlayResetRot:hover { background: rgba(167,139,218,.3); }
 
     /* ============ 表单弹窗（毛玻璃） ============ */
     .modal-overlay {
@@ -546,6 +563,11 @@
       <div class="overlay-row">
         <span>透明度</span>
         <input type="range" id="overlayOpacity" min="30" max="100" value="85" />
+      </div>
+      <div class="overlay-row">
+        <span>旋转</span>
+        <input type="range" id="overlayRotation" min="-180" max="180" value="0" title="旋转角度" />
+        <button id="overlayResetRot" type="button" title="旋转归零">↺</button>
       </div>
       <div class="overlay-row">
         <button class="overlay-btn-main" id="overlayToggle" type="button">🙈 隐藏</button>
@@ -1270,16 +1292,20 @@
 
     /* ---------- 手绘地图叠加（上传自定义卡通地图） ---------- */
     var overlayImage = null;              // 图片 dataURL
-    var overlayLayer = null;              // L.imageOverlay
-    var overlaySW = null, overlayNE = null; // 两个角点拖拽标记
+    var overlayLayer = null;              // 图片 DOM（img）
+    var overlaySWEl = null, overlayNEEl = null; // 两个角点拖拽元素
+    var overlayRotateEl = null;           // 旋转手柄
     var overlayWGS = null;                // 叠加范围（WGS-84 基准，跨底图保持一致）
+    var overlayBounds = null;             // 当前底图坐标系的 L.LatLngBounds
     var overlayOpacity = 0.85;
     var overlayVisible = true;
+    var overlayRotation = 0;              // 旋转角度（度，顺时针为正）
     var OVERLAY_KEY = 'campusMapOverlay';
     var IDB_NAME = 'campusMapDB';
     var IDB_STORE = 'files';
     var SB_OVERLAY_TABLE = 'campus_overlay';   // 云端手绘图数据表（单行 id='shared'）
     var overlayCloudPushTimer = null;          // 云端推送节流
+    var overlayMapListening = false;          // 是否已监听地图移动
 
     // IndexedDB：存放手绘图（localStorage 放不下大图）
     function idbOpen() {
@@ -1325,20 +1351,32 @@
       });
     }
 
-    // 角点拖拽图标
-    function cornerIcon() {
-      return L.divIcon({
-        className: '',
-        html: '<div style="width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid #9d7fd4;box-shadow:0 0 0 3px rgba(157,127,212,.28);cursor:move;"></div>',
-        iconSize: [16, 16],
-        iconAnchor: [8, 8]
-      });
+    // 创建叠加层里的可交互元素（角点/手柄）
+    function makeOverlayEl(cls) {
+      var el = L.DomUtil.create('div', cls, map.getPanes().overlayPane);
+      el.style.position = 'absolute';
+      el.style.left = '0';
+      el.style.top = '0';
+      L.DomEvent.disableClickPropagation(el);
+      L.DomEvent.disableScrollPropagation(el);
+      return el;
     }
 
     function removeOverlayLayers() {
-      if (overlayLayer) { map.removeLayer(overlayLayer); overlayLayer = null; }
-      if (overlaySW) { map.removeLayer(overlaySW); overlaySW = null; }
-      if (overlayNE) { map.removeLayer(overlayNE); overlayNE = null; }
+      if (overlayLayer) { L.DomUtil.remove(overlayLayer); overlayLayer = null; }
+      if (overlaySWEl) { L.DomUtil.remove(overlaySWEl); overlaySWEl = null; }
+      if (overlayNEEl) { L.DomUtil.remove(overlayNEEl); overlayNEEl = null; }
+      if (overlayRotateEl) { L.DomUtil.remove(overlayRotateEl); overlayRotateEl = null; }
+      if (overlayMapListening) {
+        map.off('move', onOverlayMapMove);
+        map.off('zoomend', onOverlayMapMove);
+        overlayMapListening = false;
+      }
+    }
+
+    // 地图移动/缩放时重算叠加层像素位置
+    function onOverlayMapMove() {
+      if (overlayLayer && overlayImage && overlayBounds) renderOverlay();
     }
 
     // 把 WGS-84 角点转到当前底图坐标系
@@ -1347,29 +1385,153 @@
       return L.latLng(p[0], p[1]);
     }
 
+    // 渲染：图片绕中心旋转，角点与手柄跟随旋转
+    function renderOverlay() {
+      if (!overlayLayer || !overlayImage || !overlayBounds) return;
+      var center = map.latLngToLayerPoint(overlayBounds.getCenter());
+      var swP = map.latLngToLayerPoint(overlayBounds.getSouthWest());
+      var neP = map.latLngToLayerPoint(overlayBounds.getNorthEast());
+      var w = Math.abs(neP.x - swP.x);
+      var h = Math.abs(neP.y - swP.y);
+      var rad = overlayRotation * Math.PI / 180;
+      var cos = Math.cos(rad), sin = Math.sin(rad);
+
+      overlayLayer.style.width = w + 'px';
+      overlayLayer.style.height = h + 'px';
+      overlayLayer.style.transform = 'translate(' + (center.x - w / 2) + 'px,' + (center.y - h / 2) + 'px) rotate(' + overlayRotation + 'deg)';
+
+      function place(el, dx, dy) {
+        if (!el) return;
+        var rx = dx * cos - dy * sin;
+        var ry = dx * sin + dy * cos;
+        el.style.transform = 'translate(' + (center.x + rx) + 'px,' + (center.y + ry) + 'px) translate(-50%,-50%)';
+      }
+      place(overlaySWEl, -w / 2, h / 2);
+      place(overlayNEEl, w / 2, -h / 2);
+      place(overlayRotateEl, 0, -h / 2 - 30);
+    }
+
+    function setOverlayImageOpacity(op) {
+      overlayOpacity = op;
+      if (overlayLayer) overlayLayer.style.opacity = op;
+    }
+
+    function setOverlayVisible(v) {
+      overlayVisible = v;
+      var items = [overlayLayer, overlaySWEl, overlayNEEl, overlayRotateEl];
+      for (var i = 0; i < items.length; i++) {
+        if (!items[i]) continue;
+        if (v && !items[i].parentNode) map.getPanes().overlayPane.appendChild(items[i]);
+        else if (!v && items[i].parentNode) items[i].parentNode.removeChild(items[i]);
+      }
+    }
+
+    // 统一拖拽（mousedown/mousemove/mouseup）
+    function startOverlayDrag(el, onMove, onEnd) {
+      var dragging = false;
+      L.DomEvent.on(el, 'mousedown', function (e) {
+        dragging = true;
+        L.DomEvent.stop(e);
+        if (map.dragging) map.dragging.disable();
+        if (el.style) el.style.cursor = 'grabbing';
+        function move(ev) {
+          if (!dragging) return;
+          onMove(map.mouseEventToLayerPoint(ev));
+        }
+        function up() {
+          if (!dragging) return;
+          dragging = false;
+          document.removeEventListener('mousemove', move);
+          document.removeEventListener('mouseup', up);
+          if (map.dragging) map.dragging.enable();
+          if (el.style) el.style.cursor = '';
+          if (onEnd) onEnd();
+        }
+        document.addEventListener('mousemove', move);
+        document.addEventListener('mouseup', up);
+      });
+    }
+
+    // 角点拖拽：鼠标位置逆旋转后更新对应角，保持旋转不变
+    function bindCornerDrag(el, which) {
+      startOverlayDrag(el, function (pt) {
+        if (!overlayBounds) return;
+        var center = map.latLngToLayerPoint(overlayBounds.getCenter());
+        var dx = pt.x - center.x, dy = pt.y - center.y;
+        var rad = -overlayRotation * Math.PI / 180; // 逆旋转到未旋转坐标系
+        var cos = Math.cos(rad), sin = Math.sin(rad);
+        var rx = dx * cos - dy * sin;
+        var ry = dx * sin + dy * cos;
+        var newLL = map.layerPointToLatLng(L.point(center.x + rx, center.y + ry));
+        var sw = overlayBounds.getSouthWest(), ne = overlayBounds.getNorthEast();
+        if (which === 'sw') sw = newLL; else ne = newLL;
+        overlayBounds = L.latLngBounds(sw, ne);
+        renderOverlay();
+        syncOverlayWGS(false);
+      }, function () { syncOverlayWGS(); });
+    }
+
+    // 旋转手柄拖拽：按手柄与中心的角度设置旋转
+    function bindRotateDrag(el) {
+      startOverlayDrag(el, function (pt) {
+        if (!overlayBounds) return;
+        var center = map.latLngToLayerPoint(overlayBounds.getCenter());
+        var ang = Math.atan2(pt.y - center.y, pt.x - center.x) * 180 / Math.PI;
+        overlayRotation = Math.round(ang + 90);
+        while (overlayRotation > 180) overlayRotation -= 360;
+        while (overlayRotation < -180) overlayRotation += 360;
+        renderOverlay();
+        syncOverlayWGS(false);
+        var rot = document.getElementById('overlayRotation');
+        if (rot && rot.value != overlayRotation) rot.value = overlayRotation;
+      }, function () { syncOverlayWGS(); });
+    }
+
+    // 当前 bounds → WGS-84 并保存
+    function syncOverlayWGS(pushCloud) {
+      if (!overlayBounds) return;
+      var s = overlayBounds.getSouthWest(), n = overlayBounds.getNorthEast();
+      var ws = convertLatLng(s.lat, s.lng, currentCrs(), 'wgs84');
+      var wn = convertLatLng(n.lat, n.lng, currentCrs(), 'wgs84');
+      overlayWGS = { sw: [ws[0], ws[1]], ne: [wn[0], wn[1]] };
+      saveOverlayMeta(pushCloud);
+    }
+
     function drawOverlay(url, wgsBounds, opacity, visible) {
       removeOverlayLayers();
       if (!url || !wgsBounds) return;
       var bounds = L.latLngBounds(wgsToCrsLL(wgsBounds.sw[0], wgsBounds.sw[1]),
                                   wgsToCrsLL(wgsBounds.ne[0], wgsBounds.ne[1]));
-      overlayLayer = L.imageOverlay(url, bounds, { opacity: opacity, interactive: false }).addTo(map);
-      if (visible === false) map.removeLayer(overlayLayer);
-      overlaySW = L.marker(bounds.getSouthWest(), { icon: cornerIcon(), draggable: true }).addTo(map);
-      overlayNE = L.marker(bounds.getNorthEast(), { icon: cornerIcon(), draggable: true }).addTo(map);
+      overlayBounds = bounds;
 
-      function syncFromMarkers(pushCloud) {
-        var b = L.latLngBounds(overlaySW.getLatLng(), overlayNE.getLatLng());
-        overlayLayer.setBounds(b);
-        var s = overlaySW.getLatLng(), n = overlayNE.getLatLng();
-        var ws = convertLatLng(s.lat, s.lng, currentCrs(), 'wgs84');
-        var wn = convertLatLng(n.lat, n.lng, currentCrs(), 'wgs84');
-        overlayWGS = { sw: [ws[0], ws[1]], ne: [wn[0], wn[1]] };
-        saveOverlayMeta(pushCloud);
+      // 图片（CSS transform 旋转，绕中心）
+      var img = overlayLayer = L.DomUtil.create('img', 'campus-overlay-img');
+      img.src = url;
+      img.style.position = 'absolute';
+      img.style.left = '0';
+      img.style.top = '0';
+      img.style.transformOrigin = '50% 50%';
+      img.style.pointerEvents = 'none';
+      map.getPanes().overlayPane.appendChild(img);
+      setOverlayImageOpacity(opacity);
+
+      // 角点 + 旋转手柄
+      overlaySWEl = makeOverlayEl('campus-overlay-corner');
+      overlayNEEl = makeOverlayEl('campus-overlay-corner');
+      overlayRotateEl = makeOverlayEl('campus-overlay-rotate');
+      bindCornerDrag(overlaySWEl, 'sw');
+      bindCornerDrag(overlayNEEl, 'ne');
+      bindRotateDrag(overlayRotateEl);
+
+      renderOverlay();
+
+      if (visible === false) setOverlayVisible(false);
+
+      if (!overlayMapListening) {
+        map.on('move', onOverlayMapMove);
+        map.on('zoomend', onOverlayMapMove);
+        overlayMapListening = true;
       }
-      overlaySW.on('drag', function () { syncFromMarkers(false); });
-      overlayNE.on('drag', function () { syncFromMarkers(false); });
-      overlaySW.on('dragend', function () { syncFromMarkers(); });
-      overlayNE.on('dragend', function () { syncFromMarkers(); });
     }
 
     function saveOverlayMeta(pushCloud) {
@@ -1377,7 +1539,8 @@
       try {
         localStorage.setItem(OVERLAY_KEY, JSON.stringify({
           sw: overlayWGS.sw, ne: overlayWGS.ne,
-          opacity: overlayOpacity, visible: overlayVisible
+          opacity: overlayOpacity, visible: overlayVisible,
+          rotation: overlayRotation
         }));
       } catch (e) {}
       // 拖拽过程中只存本地；松手后再推云端
@@ -1387,8 +1550,10 @@
     function removeOverlay() {
       overlayImage = null;
       overlayWGS = null;
+      overlayBounds = null;
       overlayOpacity = 0.85;
       overlayVisible = true;
+      overlayRotation = 0;
       removeOverlayLayers();
       try { localStorage.removeItem(OVERLAY_KEY); } catch (e) {}
       idbDel('overlayImage');
@@ -1406,6 +1571,7 @@
         overlayWGS = { sw: meta.sw, ne: meta.ne };
         overlayOpacity = (meta.opacity != null) ? meta.opacity : 0.85;
         overlayVisible = (meta.visible !== false);
+        overlayRotation = (meta.rotation != null) ? meta.rotation : 0;
         idbGet('overlayImage').then(function (dataURL) {
           if (!dataURL) { // 本地有元数据但图片丢了 → 直接拉云端
             sbLoadOverlay();
@@ -1432,6 +1598,8 @@
       var op = document.getElementById('overlayOpacity');
       var v = Math.round(overlayOpacity * 100);
       if (op.value != v) op.value = v;
+      var rot = document.getElementById('overlayRotation');
+      if (rot && rot.value != overlayRotation) rot.value = overlayRotation;
       document.getElementById('overlayToggle').textContent = overlayVisible ? '🙈 隐藏' : '👁 显示';
       // 更新云端状态（默认显示）
       var st = document.getElementById('overlayStatus');
@@ -1497,7 +1665,8 @@
         sw_lat: overlayWGS.sw[0], sw_lng: overlayWGS.sw[1],
         ne_lat: overlayWGS.ne[0], ne_lng: overlayWGS.ne[1],
         opacity: overlayOpacity,
-        visible: overlayVisible
+        visible: overlayVisible,
+        rotation: overlayRotation
       };
       var send = function (img) {
         payload.image = img;
@@ -1569,11 +1738,13 @@
           overlayWGS = { sw: [r.sw_lat, r.sw_lng], ne: [r.ne_lat, r.ne_lng] };
           overlayOpacity = (r.opacity != null) ? r.opacity : 0.85;
           overlayVisible = (r.visible !== false);
+          overlayRotation = (r.rotation != null) ? r.rotation : 0;
           idbPut('overlayImage', r.image);
           try {
             localStorage.setItem(OVERLAY_KEY, JSON.stringify({
               sw: overlayWGS.sw, ne: overlayWGS.ne,
-              opacity: overlayOpacity, visible: overlayVisible
+              opacity: overlayOpacity, visible: overlayVisible,
+              rotation: overlayRotation
             }));
           } catch (e) {}
           drawOverlay(r.image, overlayWGS, overlayOpacity, overlayVisible);
@@ -1637,6 +1808,7 @@
         overlayWGS = { sw: [sw[0], sw[1]], ne: [ne[0], ne[1]] };
         overlayOpacity = 0.85;
         overlayVisible = true;
+        overlayRotation = 0;   // 换图时旋转归零，便于重新对齐
         drawOverlay(dataURL, overlayWGS, overlayOpacity, overlayVisible);
         idbPut('overlayImage', dataURL);
         saveOverlayMeta();
@@ -1647,13 +1819,24 @@
     });
     document.getElementById('overlayOpacity').addEventListener('input', function () {
       overlayOpacity = this.value / 100;
-      if (overlayLayer) overlayLayer.setOpacity(overlayOpacity);
+      setOverlayImageOpacity(overlayOpacity);
+      saveOverlayMeta();
+    });
+    document.getElementById('overlayRotation').addEventListener('input', function () {
+      overlayRotation = parseFloat(this.value) || 0;
+      renderOverlay();
+      saveOverlayMeta();
+    });
+    document.getElementById('overlayResetRot').addEventListener('click', function () {
+      overlayRotation = 0;
+      var rot = document.getElementById('overlayRotation');
+      if (rot) rot.value = 0;
+      renderOverlay();
       saveOverlayMeta();
     });
     document.getElementById('overlayToggle').addEventListener('click', function () {
       if (!overlayLayer) return;
-      if (overlayVisible) { map.removeLayer(overlayLayer); overlayVisible = false; }
-      else { map.addLayer(overlayLayer); overlayVisible = true; }
+      setOverlayVisible(!overlayVisible);
       saveOverlayMeta();
       updateOverlayPanel();
     });
