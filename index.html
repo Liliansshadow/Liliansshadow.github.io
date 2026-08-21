@@ -1593,7 +1593,7 @@
         st.textContent = '💾 仅本地保存（未配置云端）';
       } else if (ok) {
         st.className = 'overlay-status cloud';
-        st.textContent = '☁️ 已共享到云端 · 所有访客可见';
+        st.textContent = overlayImage ? '☁️ 已共享到云端 · 所有访客可见' : '☁️ 云端共享已开启 · 上传后所有访客可见';
       } else {
         st.className = 'overlay-status';
         st.textContent = '⚠️ 云端同步失败 · 仅本地保存';
@@ -1612,7 +1612,13 @@
     overlayCtrl.addTo(map);
 
     document.getElementById('overlayBtn').addEventListener('click', function () {
-      document.getElementById('overlayPanel').classList.toggle('show');
+      var panel = document.getElementById('overlayPanel');
+      panel.classList.toggle('show');
+      // 打开面板时若尚未初始化状态，则显示云端共享提示
+      if (panel.classList.contains('show')) {
+        var st = document.getElementById('overlayStatus');
+        if (st && st.textContent === '') setOverlayCloudStatus(sbConfigured());
+      }
     });
     document.getElementById('overlayUpload').addEventListener('click', function () {
       document.getElementById('overlayFileInput').click();
