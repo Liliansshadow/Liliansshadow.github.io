@@ -788,6 +788,16 @@
         subdomains: ['1', '2', '3', '4'],
         attr: '&copy; 高德地图'
       },
+      amap_sat: {
+        name: '高德卫星',
+        crs: 'gcj02',
+        url: 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
+        labelUrl: 'https://webst0{s}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}',
+        subdomains: ['1', '2', '3', '4'],
+        attr: '&copy; 高德地图',
+        maxZoom: 18,
+        labelMaxZoom: 17
+      },
       osm: {
         name: 'OpenStreetMap',
         crs: 'wgs84',
@@ -833,8 +843,18 @@
       var p = PROVIDERS[key];
       return L.tileLayer(p.url, {
         subdomains: p.subdomains,
-        maxZoom: MAX_ZOOM,
+        maxZoom: p.maxZoom || MAX_ZOOM,
         attribution: p.attr
+      });
+    }
+
+    // 卫星底图的标注叠加层（高德 style=8 为透明标注 PNG）
+    function createLabelLayer(key) {
+      var p = PROVIDERS[key];
+      if (!p.labelUrl) return null;
+      return L.tileLayer(p.labelUrl, {
+        subdomains: p.subdomains,
+        maxZoom: p.labelMaxZoom || p.maxZoom || MAX_ZOOM
       });
     }
 
@@ -937,6 +957,8 @@
     L.control.zoom({ position: 'topright' }).addTo(map);
 
     var tileLayer = createTileLayer(CURRENT_PROVIDER).addTo(map);
+    var labelLayer = createLabelLayer(CURRENT_PROVIDER);
+    if (labelLayer) labelLayer.addTo(map);
 
     // 岳麓区范围示意圆 + 中心点
     var rangeCircle, centerDot;
@@ -982,9 +1004,12 @@
       if (!PROVIDERS[key] || key === CURRENT_PROVIDER) return;
       CURRENT_PROVIDER = key;
 
-      // 换底图
+      // 换底图（含卫星标注叠加层）
       map.removeLayer(tileLayer);
+      if (labelLayer) map.removeLayer(labelLayer);
       tileLayer = createTileLayer(key).addTo(map);
+      labelLayer = createLabelLayer(key);
+      if (labelLayer) labelLayer.addTo(map);
 
       // 重设范围与中心（保持同一物理位置）
       map.setMaxBounds(computeBounds());
